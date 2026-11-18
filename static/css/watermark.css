@@ -91,6 +91,9 @@ th { color: var(--muted); font-weight: 500; }
   background: #e7f5c8;
   font-size: 0.75rem;
 }
+.chip-seat { background: #d8ecff; color: #163a5f; }
+.chip-idle { background: #eceff1; color: var(--muted); }
+.small { font-size: 0.82rem; }
 .muted { color: var(--muted); }
 .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.7rem 0; }
 .cardish {

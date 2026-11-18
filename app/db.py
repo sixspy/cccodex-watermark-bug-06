@@ -65,11 +65,38 @@ CREATE TABLE IF NOT EXISTS gap_reports (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 盖印席位占用：每个批次至多一个占用者，batch_id 上的唯一索引即互斥凭证
+CREATE TABLE IF NOT EXISTS seat_occupancies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL UNIQUE REFERENCES run_batches(id),
+  owner TEXT NOT NULL,
+  occupied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 正式印记：一个批次只落一枚，batch_id 唯一索引挡住后到写入
+CREATE TABLE IF NOT EXISTS formal_stamps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL UNIQUE REFERENCES run_batches(id),
+  watermark_value TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  stamped_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
 """
+
+# 互斥凭证：唯一索引。并发抢席时后到的 INSERT 必然触发 IntegrityError，整笔回滚。
+SEAT_BATCH_UNIQUE = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_seat_occupancies_batch "
+    "ON seat_occupancies(batch_id)"
+)
+FORMAL_BATCH_UNIQUE = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_formal_stamps_batch "
+    "ON formal_stamps(batch_id)"
+)
 
 SEED_TEMPLATES = [
     ("dw_orders_d", "wm_batch", 1, "现行"),
@@ -91,11 +118,34 @@ SEED_EDGES = [
 ]
 
 
+def _backfill_formal_stamps(conn) -> None:
+    """已盖印批次补登同源正式印记（老库迁移 / 种子后回填，同一逻辑）。"""
+    rows = conn.execute(
+        "SELECT b.id, b.watermark_value, b.stamped_at FROM run_batches b "
+        "WHERE b.status='已盖印' AND b.watermark_value IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM formal_stamps f WHERE f.batch_id=b.id)"
+    ).fetchall()
+    for r in rows:
+        conn.execute(
+            "INSERT INTO formal_stamps(batch_id, watermark_value, owner, stamped_at) "
+            "VALUES (?,?,?,?)",
+            (r["id"], r["watermark_value"], "system", r["stamped_at"]),
+        )
+    # 清理旧版本散落 meta 的席位/印记双写痕迹，避免同源数据两处存放
+    conn.execute(
+        "DELETE FROM meta WHERE key LIKE 'seat\\_%' ESCAPE '\\' "
+        "OR key LIKE 'formal_wm\\_%' ESCAPE '\\'"
+    )
+
+
 def init_db(db_path: str | None = None) -> None:
     with get_db(db_path) as conn:
         conn.executescript(SCHEMA)
+        conn.execute(SEAT_BATCH_UNIQUE)
+        conn.execute(FORMAL_BATCH_UNIQUE)
         row = conn.execute("SELECT value FROM meta WHERE key='seeded'").fetchone()
         if row:
+            _backfill_formal_stamps(conn)
             return
         for table, col, ver, status in SEED_TEMPLATES:
             conn.execute(
@@ -122,3 +172,4 @@ def init_db(db_path: str | None = None) -> None:
                 (up, down),
             )
         conn.execute("INSERT INTO meta(key, value) VALUES ('seeded','1')")
+        _backfill_formal_stamps(conn)

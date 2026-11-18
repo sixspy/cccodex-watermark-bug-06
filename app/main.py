@@ -16,7 +16,7 @@ from app.services import (
     trace_downstream,
 )
 from app.services.errors import ServiceError
-from app.services.seat import stamp_occupied
+from app.services.seat import list_seats, stamp_occupied
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC = ROOT / "static"
@@ -163,6 +163,17 @@ async def api_batch_detail(request: Request):
     return json_response({"batch": batch})
 
 
+@app.router.get("/api/seats")
+async def api_seats(request):
+    try:
+        require_user(request)
+    except ServiceError as exc:
+        return json_response({"error": exc.message}, exc.status_code)
+    return json_response(
+        {"items": list_seats(), "mutex_token": "unique_index"}
+    )
+
+
 @app.router.post("/api/batches/{batch_id}/stamp")
 async def api_stamp(request: Request):
     try:
@@ -173,7 +184,9 @@ async def api_stamp(request: Request):
         batch = stamp_occupied(batch_id, str(body.get("watermark_value", "")), owner=owner)
     except ServiceError as exc:
         return json_response({"ok": False, "error": exc.message}, exc.status_code)
-    return json_response({"ok": True, "batch": batch})
+    return json_response(
+        {"ok": True, "batch": batch, "mutex_token": "unique_index"}
+    )
 
 
 @app.router.post("/api/trace")
